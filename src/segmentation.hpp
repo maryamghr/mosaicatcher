@@ -376,6 +376,7 @@ int main_segment(int argc, char** argv) {
     ("penalize-none", boost::program_options::value<float>(&conf.none_penalty)->implicit_value(100), "Penalize segments through removed bins (which are marked by 'None' in the counts table).")
     ("remove-none", "Remove segments through removed bins before segmentation. Mutually exclusive with --penalize-none.")
     ("normalize-cells", "Instead of using raw counts for each strand, normalize them per cell. This way all cells contribute equally.")
+    ("merge-segments", boost::program_options::value<float>(&conf.merge_threshold)->implicit_value(0.1), "Merge segments if their means are too similar in nearly all cells")
     ("do-not-remove-bad-cells", "Keep all cells (by default, cells which are marked 'None' in all bins get removed")
     ;
 
@@ -694,6 +695,62 @@ int main_segment(int argc, char** argv) {
             std::cerr << "[ERROR] Segmentation failed" << std::endl;
 
 
+
+        // 5. Merge segments in their means are too similar in all cells:
+        Matrix<float> cumsum(counts.size()*2);
+        if (vm.count("merge-segments"))
+        {
+            // Calculate cummulative sums of data. This way I can cheaply
+            // calculate means for consecutive stretches
+            for (unsigned i = 0; i < counts.size(); ++i) {
+                // cumsum of watson counts
+                std::transform(counts[i].begin(),
+                               counts[i].end(),
+                               std::back_inserter(cumsum[2*i]),
+                               [](Counter const & c) {return static_cast<float>(c.watson_count);});
+                std::partial_sum(cumsum[2*i].begin(),
+                                 cumsum[2*i].end(),
+                                 cumsum[2*i].begin());
+                // cumsum of crick counts
+                std::transform(counts[i].begin(),
+                               counts[i].end(),
+                               std::back_inserter(cumsum[2*i+1]),
+                               [](Counter const & c) {return static_cast<float>(c.crick_count);});
+                std::partial_sum(cumsum[2*i+1].begin(),
+                                 cumsum[2*i+1].end(),
+                                 cumsum[2*i+1].begin());
+            }
+
+
+
+            // Go through the DP matrix
+            for (unsigned cp = 1; cp < max_cp; ++cp) {
+                std::cout << "Changepoints: " << cp << std::endl;
+                for (unsigned k = 0; k < cp; ++k) {
+                    unsigned from1 = k==0 ? 0 : breakpoints[cp][k-1];
+                    unsigned to1   = breakpoints[cp][k]-1;
+                    unsigned from2 = breakpoints[cp][k];
+                    unsigned to2   = breakpoints[cp][k+1]-1;
+
+                    std::cout << "    k = " << k << ": [" << from1 << "," << to1 << "], [" << from2 << "," << to2 << "]" << std::endl;
+                    for (unsigned i = 0; i < counts.size(); ++i) {
+                        float mean_w_left  = (cumsum[2*i][to1] - (from1>=1 ? cumsum[2*i][from1-1] : 0)) / (float)(to1-from1+1);
+                        float mean_w_right = (cumsum[2*i][to2] - (from2>=1 ? cumsum[2*i][from2-1] : 0)) / (float)(to2-from2+1);
+                        float rel_diff_w   = abs(mean_w_left - mean_w_right) / mean_per_sample[i];
+                        float mean_c_left  = (cumsum[2*i+1][to1] - (from1>=1 ? cumsum[2*i+1][from1-1] : 0)) / (float)(to1-from1+1);
+                        float mean_c_right = (cumsum[2*i+1][to2] - (from2>=1 ? cumsum[2*i+1][from2-1] : 0)) / (float)(to2-from2+1);
+                        float rel_diff_c   = abs(mean_c_left - mean_c_right) / mean_per_sample[i];
+                        std::cout << "          Watson: " << mean_w_left << "\t" << mean_w_right << "\t(rel. diff = " << rel_diff_w << ")" << std::endl;
+                        std::cout << "          Crick:  " << mean_c_left << "\t" << mean_c_right << "\t(rel. diff = " << rel_diff_c << ")" << std::endl;
+
+                        
+                    }
+                }
+            }
+
+            std::cout << "[Info] Merging segments ..." << std::endl;
+
+        } // if (vm.count("merge-segments"))
 
 
         
